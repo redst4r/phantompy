@@ -1,26 +1,27 @@
 from pybustools.pybustools import iterate_bus_cells_umi_multiple
+from pybustools.pybustools import Bus
+from pybustools.parallel_generators import ParallelCellUMIGenerator
 import collections
 import toolz
-from pybustools.pybustools import Bus
 import numpy as np
 import pandas as pd
 import tqdm
 import pickle
 
 
-def info_list_to_genes(info_list, samplename):
-    """
-    each iteration return (cb, umi), list(tuples)
-
-    usually the list is len(1): i.e. a molecule mapping to a EC.
-    However, sometimes theres multiple reads from the same molecule that map to different ECs
-    """
-    genes = [set(bus[samplename].ec_dict[ec]) for ec, count, flag in info_list]
-    # since its a single molecule, there MUST be some overlap in the genes
-    o = genes[0]
-    for s in genes[1:]:
-        o = o & s
-    return o
+# def info_list_to_genes(info_list, samplename):
+#     """
+#     each iteration return (cb, umi), list(tuples)
+#
+#     usually the list is len(1): i.e. a molecule mapping to a EC.
+#     However, sometimes theres multiple reads from the same molecule that map to different ECs
+#     """
+#     genes = [set(bus[samplename].ec_dict[ec]) for ec, count, flag in info_list]
+#     # since its a single molecule, there MUST be some overlap in the genes
+#     o = genes[0]
+#     for s in genes[1:]:
+#         o = o & s
+#     return o
 
 
 class DisjointSets():
@@ -119,7 +120,14 @@ def phantom_create_dataframes(samples, busfiles):
      - instead of creating one entry per molecule, we just keep track of the frequencies of these fingerprints
      - With four samples, a molecule might have the fingerprint: [0, 10, 2, 1] (doesnt occur in exp1, 10x in exp2, 2x in exp3...)
     """
-    bus_iter = iterate_bus_cells_umi_multiple(samples, busfiles, decode_seq=False)
+    PARALLEL = True
+    if PARALLEL:
+        bus_dict = {n: b for n, b in zip(samples, busfiles)}
+        PG = ParallelCellUMIGenerator(bus_dict, decode_seq=False, queue_size=10000)
+        PG.start_queues()
+        bus_iter = PG.iterate()
+    else:
+        bus_iter = iterate_bus_cells_umi_multiple(samples, busfiles, decode_seq=False)
 
     # keep track of how molecules get amplified in the different samples
     amp_factors_per_sample = {n: collections.defaultdict(int) for n in samples}
@@ -138,6 +146,9 @@ def phantom_create_dataframes(samples, busfiles):
                 amp_factors_per_sample[name][n_reads] += 1
         fp = [fingerprint[_] for _ in samples]
         fingerprints_counter[tuple(fp)] += 1
+
+    # if PARALLEL:
+    #     PG.cleanup()
 
     k, v = zip(*fingerprints_counter.items())
     df_finger = pd.DataFrame(k, columns=samples)
