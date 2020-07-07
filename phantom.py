@@ -111,20 +111,21 @@ def emit_records_based_on_gene(cb, umi, info_dict):
 
 
 def phantom_create_dataframes(samples, busfiles):
-
-    I = iterate_bus_cells_umi_multiple(samples, busfiles, decode_seq=False)
+    """
+    main function of PhantomPurger: for the set of samples (dict of busfiles),
+    determine the molecules appearing in multiple experiments.
+    Instead of trackign every molecule, we just do bookkeeping on the "experiment" fingerprints of each molecule:
+     - each molecule gets a charateristic fingerprint/vector (hhow often it occurs in which experiment)
+     - instead of creating one entry per molecule, we just keep track of the frequencies of these fingerprints
+     - With four samples, a molecule might have the fingerprint: [0, 10, 2, 1] (doesnt occur in exp1, 10x in exp2, 2x in exp3...)
+    """
+    bus_iter = iterate_bus_cells_umi_multiple(samples, busfiles, decode_seq=False)
 
     # keep track of how molecules get amplified in the different samples
     amp_factors_per_sample = {n: collections.defaultdict(int) for n in samples}
-
-    """
-    to keep track of the molecules:
-     - each molecule gets a charateristic fingerprint/vector (hhow often it occurs in which experiment)
-     - instead of creating one entry per molecule, we just keep track of the frequencies of these fingerprints
-    """
     fingerprints_counter = collections.defaultdict(int)
 
-    for (cb_, umi_), info_dict_ in tqdm.tqdm(I):
+    for (cb_, umi_), info_dict_ in tqdm.tqdm(bus_iter):
         # THIS SPLIts according to same gene
         for (cb, umi), info_dict in emit_records_based_on_gene(cb_, umi_, info_dict_):
             fingerprint = collections.defaultdict(int)
@@ -245,66 +246,55 @@ for (cb_, umi_), info_dict_ in tqdm.tqdm(I):
                     chimer_per_cell_notorigin[s][cb] +=1
 
 
-with open('/tmp/dnbseqg400.V300039753_chimer_cells.pkl', 'wb') as fh:
+with open(f'/tmp/{flowcell}_chimer_cells.pkl', 'wb') as fh:
     pickle.dump([chimer_per_cell, chimer_per_cell_notorigin], fh)
 
-# samples_to_index = {s: i for i, s in enumerate(samples)}
-#
-# row_ix = []
-# col_ix = []
-# data = []
-# counter = 0
-# # a table to keep track of the non-chimers (unique to experiment) as a function of the amp.factor r
-# non_chimers = collections.defaultdict(int)
-# chimers = collections.defaultdict(int)
 
-# for (cb_, umi_), info_dict in tqdm.tqdm(I):
-#
-#     # THIS SPLIts according to same gene
-#     for cb, umi in emit_records_based_on_gene(cb_, umi_, info_dict):
-#         # only found in on experiment
-#         if len(info_dict) == 1:
-#             #however, this molecule migt still be present in reads that map to different EC
-#             (name, info_list), = info_dict.items()
-#
-#             # genes = info_list_to_genes(info_list, name)
-#             # if len(genes) == 0:
-#             #     print('weird, single molecule mapping to two different genes')
-#             #     continue
-#
-#             # this single molecule has multipel reads to it, which might also
-#             # be distirbuted over several bus entries
-#             n_reads = 0
-#             for ec, counts, flag in info_list:
-#                 n_reads += counts
-#             non_chimers[n_reads] += 1
-#
-#             # row_ix.append(counter)
-#             # col_ix.append(samples_to_index[name])
-#             # data.append(n_reads)
-#             amp_factors_per_sample[name][n_reads] += 1
-#
-#         if len(info_dict) > 1:
-#             # this is a potential phantom molecule.
-#             # same cb/umi and maps to the same gene across multiple experiments
-#             reads_per_sample = {}
-#             for name, info_list in info_dict.items():
-#                 # for each sample, count the number of reads
-#                 n_reads = 0
-#                 for ec, counts, flag in info_list:
-#                     n_reads += counts
-#                 reads_per_sample[name] = n_reads
-#
-#                 amp_factors_per_sample[name][n_reads] += 1
-#
-#             n_reads_total = np.sum(list(reads_per_sample.values()))
-#             chimers[n_reads_total] += 1
-#
-#
-#             # the_row = np.zeros(len(samples))
-#             # for name, reads in reads_per_sample.items():
-#             #     # the_row[samples_to_index[name]] = reads
-#             #     row_ix.append(counter)
-#             #     col_ix.append(samples_to_index[name])
-#             #     data.append(reads)
-#         counter += 1
+
+# ===========================================================
+# count the UMI overlap of cells
+# ===========================================================
+samples = [
+'dnbseqg400.V300026370_88A.L05A_2-658952_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
+'dnbseqg400.V300026370_88A.L05B_2-658953_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
+'dnbseqg400.V300039753.L05A_2-658952_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
+'dnbseqg400.V300039753.L05B_2-658953_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
+'novaseq.190919_A00266_0278_BHFJY5DRXX_ParkFoulkesCRUK.L05A_2-658952_cellranger_v3p0p1_refdata-cellranger-GRCh38-3_0_0.outs',
+'novaseq.190919_A00266_0278_BHFJY5DRXX_ParkFoulkesCRUK.L05B_2-658953_cellranger_v3p0p1_refdata-cellranger-GRCh38-3_0_0.outs'
+]
+busfiles = [f'/home/mstrasse/mountSSD/kallisto_out/{s}/kallisto/sort_bus/bus_output/output.corrected.sort.bus' for s in samples]
+bus_dict = {n:b for n,b in zip(samples, busfiles)}
+import itertools
+import tqdm
+from pybustools.parallel_generators import ParallelCellGenerator
+from pybustools.pybustools import iterate_bus_cells_multiple
+
+if True:  # run parallel
+    PG = ParallelCellGenerator(bus_dict, decode_seq=False, queue_size=10000)
+    PG.start_queues()
+    I = PG.iterate()
+else:  # run serial
+    I = iterate_bus_cells_multiple(samples, busfiles, decode_seq=False)
+
+
+def jacard(list1, list2):
+    s1 = set(list1)
+    s2 = set(list2)
+    return len(s1 & s2) / len(s1 | s2)
+
+cb_jaccard = []
+counter = 0
+for cb, info_dict in tqdm.tqdm(I):
+    jac = {}
+    for p1, p2 in itertools.combinations(samples, 2):
+        if p1 in info_dict and p2 in info_dict:
+            umi1 = [_[0] for _ in info_dict[p1]]
+            umi2 = [_[0] for _ in info_dict[p2]]
+            # umi2 = info_dict[p2]
+            j = jacard(umi1, umi2)
+            jac[(p1,p2)] = j
+    jac['CB'] = cb
+    cb_jaccard.append(jac)
+    counter+=1
+# parallel: 2504888it [19:41, 2120.96it/s]
+# serial :  2504888it [24:08, 1729.65it/s]
