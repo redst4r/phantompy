@@ -63,9 +63,9 @@ d.add_set({1,7}, 'Y')  # this should merge the entire thing
 TMPbus = collections.namedtuple("TMPbus", 'cb umi ec counts flag samplename')
 
 
-def emit_records_based_on_gene(cb, umi, info_dict):
+def emit_records_based_on_gene(cb, umi, info_dict, busobject_dict):
     """
-    this splits the record into groups that map to the same gene
+    this splits the record into groups that map to the same gene/transcript
 
     info_dict contains muliple bus entries from different samples.
     we want to group theese such that bus-records coming form the same molecules
@@ -85,7 +85,9 @@ def emit_records_based_on_gene(cb, umi, info_dict):
         # get the genes corresponding to each record
         genes = {}
         for b in bus_list:
-            g = bus[b.samplename].ec_dict[b.ec]
+            bus_object = busobject_dict[b.samplename]
+            # TODO this ASSUMES THAT all transcript IDs encode the same stuff across busfiles!!
+            g = bus_object.ec_dict[b.ec]
             genes[b] = set(g)
 
         # group the samples, based on if they have overlaping genes
@@ -93,9 +95,9 @@ def emit_records_based_on_gene(cb, umi, info_dict):
         for b, gene_set in genes.items():
             DS.add_set(gene_set, name=b)
 
-        disjoint_sets = DS.disjoint_sets
+        # now, each dijoint set is identified by a tuple of samples
 
-        for bus_tuple in disjoint_sets.keys():
+        for bus_tuple in DS.disjoint_sets.keys():
             # the keys are a consistent single molecule
             # so we must create only ONE result per key
             # if they are from the same sample, add up reads
@@ -111,7 +113,14 @@ def emit_records_based_on_gene(cb, umi, info_dict):
             yield (cb, umi), emitted_dict
 
 
-def phantom_create_dataframes(samples, busfiles):
+def _bus_check_transcript_equivalence(list_of_busobjects):
+    # quick check: are all these transcript-dicts compatible?
+    # WE ASSUME THIS IN `emit_records_based_on_gene`
+    for bus in list_of_busobjects:
+        assert bus.transcript_dict == list_of_busobjects[0].transcript_dict, "transcript ids map to different transcripts!!"
+
+
+def phantom_create_dataframes(busobject_dict):
     """
     main function of PhantomPurger: for the set of samples (dict of busfiles),
     determine the molecules appearing in multiple experiments.
@@ -120,10 +129,21 @@ def phantom_create_dataframes(samples, busfiles):
      - instead of creating one entry per molecule, we just keep track of the frequencies of these fingerprints
      - With four samples, a molecule might have the fingerprint: [0, 10, 2, 1] (doesnt occur in exp1, 10x in exp2, 2x in exp3...)
     """
+
+    # unpack the dict; its easier
+    samples, busfiles = [], []
+    for s, bus in busobject_dict.items():
+        samples.append(s)
+        busfiles.append(str(bus.busfile))
+
+    _bus_check_transcript_equivalence(list(busobject_dict.values()))
+
+    # initialie iterators
     PARALLEL = True
     if PARALLEL:
-        bus_dict = {n: b for n, b in zip(samples, busfiles)}
-        PG = ParallelCellUMIGenerator(bus_dict, decode_seq=False, queue_size=10000)
+        PG = ParallelCellUMIGenerator({s: b for s, b in zip(samples, busfiles)},
+                                      decode_seq=False,
+                                      queue_size=10000)
         PG.start_queues()
         bus_iter = PG.iterate()
     else:
@@ -135,7 +155,7 @@ def phantom_create_dataframes(samples, busfiles):
 
     for (cb_, umi_), info_dict_ in tqdm.tqdm(bus_iter):
         # THIS SPLIts according to same gene
-        for (cb, umi), info_dict in emit_records_based_on_gene(cb_, umi_, info_dict_):
+        for (cb, umi), info_dict in emit_records_based_on_gene(cb_, umi_, info_dict_, busobject_dict):
             fingerprint = collections.defaultdict(int)
             for name, info_list in info_dict.items():
                 # for each sample, count the number of reads
@@ -159,20 +179,21 @@ def phantom_create_dataframes(samples, busfiles):
     df_finger['r'] = r
     df_finger['freq'] = v
 
-    # calc the conditional (on r) prob of finding a molecule ampliefied r times in each experiment
+    # calc the conditional (on r) prob of finding a molecule
+    # ampliefied r times in each experiment
     conditional = []
 
     for r in df_finger['r'].unique():
         _tmp = df_finger.query('r==@r')
 
-        # each sample has k amount of reads. but we also obersve the entire fingerprint n times
+        # each sample has k amount of reads.
+        # but we also obersve the entire fingerprint n times
         # so each expeiment really had k*n amount of reads
         v = {}
         for s in samples:
             v[s] = np.sum(_tmp[s] * _tmp['freq'])
         v_total = sum(v.values())
         v = toolz.valmap(lambda x: x/v_total, v)
-        _d = {'r': r}
         for s in samples:
             conditional.append({'r': r, 'sample': s, 'fraction': v[s]})
     conditional = pd.DataFrame(conditional).pivot_table(index='r', columns='sample', values='fraction')
@@ -180,132 +201,26 @@ def phantom_create_dataframes(samples, busfiles):
     return df_finger, conditional
 
 
-# flowcell V300026370
-flowcell = 'dnbseqg400.V300026370'
-samples = [
-    'dnbseqg400.V300026370_88A.E11B_2-718745_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-    'dnbseqg400.V300026370_88A.L05A_2-658952_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-    'dnbseqg400.V300026370_88A.L05B_2-658953_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-]
+def phantom_prep_binom_regr(df_finger):
+    """
+    turn the fingerprint dataframe into a DF that we can use in binomial regression.
+    Summarises the number of chimeric/nonchimeric molecule as a function of r
+    (r=sum of reads of the molecule)
+    """
+    # number of non-chimeric molecules as a function of r
+    df_non_chimers = df_finger.query('k_chimera==1')
+    df_non_chimers = df_non_chimers.groupby('r')[['freq']].sum()
+    df_non_chimers.rename({'freq': 'freq_non_chimer'}, axis=1, inplace=True)
+    df_non_chimers.head()
 
-# flowcell V300039753
-flowcell = 'dnbseqg400.V300039753'
-samples = [
-    'dnbseqg400.V300039753.E15A_2-750715_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-    'dnbseqg400.V300039753.E15B_2-750716_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-    'dnbseqg400.V300039753.E15C_2-751611_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-    'dnbseqg400.V300039753.E15D_2-751118_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-    'dnbseqg400.V300039753.L05A_2-658952_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-    'dnbseqg400.V300039753.L05B_2-658953_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-]
+    # TODO not sure if the k==2 shouldnt be k>=2!!!!
+    import warnings
+    warnings.warn('TODO not sure if the k==2 shouldnt be k>=2!!!!')
+    df_chimers = df_finger.query('k_chimera==2').groupby('r')[['freq']].sum()
+    df_chimers.rename({'freq': 'freq_chimer'}, axis=1, inplace=True)
+    df_chimers.head()
 
-# novaseq flowcell
-flowcell = 'novaseq.190919_A00266_0278_BHFJY5DRXX'
-samples = [
-    'novaseq.190919_A00266_0278_BHFJY5DRXX_ParkFoulkesCRUK.L05A_2-658952_cellranger_v3p0p1_refdata-cellranger-GRCh38-3_0_0.outs',
-    'novaseq.190919_A00266_0278_BHFJY5DRXX_ParkFoulkesCRUK.L05B_2-658953_cellranger_v3p0p1_refdata-cellranger-GRCh38-3_0_0.outs'
-]
+    df_binom = df_non_chimers.merge(df_chimers, left_index=True, right_index=True, how='outer')
+    df_binom = df_binom.replace({np.nan: 0})
 
-busfiles = [f'/home/mstrasse/mountSSD/kallisto_out/{s}/kallisto/sort_bus/bus_output/output.corrected.sort.bus' for s in samples]
-bus = {s: Bus(f'/home/mstrasse/mountSSD/kallisto_out/{s}/kallisto/sort_bus/bus_output/') for s in samples}
-
-"""
-=============================================================================
-create the dataframes for the purger
-This is the comp. intensive part
-=============================================================================
-"""
-
-df_finger, conditional = phantom_create_dataframes(samples, busfiles)
-with open(f'/tmp/{flowcell}_phantomPurger.pkl', 'wb') as fh:
-    pickle.dump([df_finger, conditional], fh)
-
-
-"""
--------------------------------------------------------------------
-for each CB, flag the number of potential dubious molecules
--------------------------------------------------------------------
-"""
-chimer_per_cell = {s: collections.defaultdict(int) for s in samples} # this coutns the chimeric molecules, but not the potential ORIGIN of the molecule
-chimer_per_cell_notorigin = {s: collections.defaultdict(int) for s in samples}  # just count the molecules that prob NOT originated in this cell
-
-I = iterate_bus_cells_umi_multiple(samples, busfiles, decode_seq=False)
-# I = toolz.take(10_000_000, I)
-for (cb_, umi_), info_dict_ in tqdm.tqdm(I):
-
-    # THIS SPLIts according to same gene
-    for (cb, umi), info_dict in emit_records_based_on_gene(cb_, umi_, info_dict_):
-        fingerprint = collections.defaultdict(int)
-        argmax_sample = None
-        argmax_read = -1
-        for name, info_list in info_dict.items():
-            # for each sample, count the number of reads
-            n_reads = 0
-            for ec, counts, flag in info_list:
-                n_reads += counts
-            fingerprint[name] = n_reads
-            if n_reads > argmax_read:
-                argmax_sample = name
-                argmax_read = n_reads
-
-        k_chim = sum([fingerprint[_] > 0 for _ in info_dict.keys()])
-
-        if k_chim > 1:
-            for s in info_dict.keys():
-                chimer_per_cell[s][cb] += 1
-                if s != argmax_sample:
-                    chimer_per_cell_notorigin[s][cb] +=1
-
-
-with open(f'/tmp/{flowcell}_chimer_cells.pkl', 'wb') as fh:
-    pickle.dump([chimer_per_cell, chimer_per_cell_notorigin], fh)
-
-
-
-# ===========================================================
-# count the UMI overlap of cells
-# ===========================================================
-samples = [
-'dnbseqg400.V300026370_88A.L05A_2-658952_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-'dnbseqg400.V300026370_88A.L05B_2-658953_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-'dnbseqg400.V300039753.L05A_2-658952_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-'dnbseqg400.V300039753.L05B_2-658953_cellranger_v3p0p1_refdata-cellranger-GRCh38-1_2_0.outs',
-'novaseq.190919_A00266_0278_BHFJY5DRXX_ParkFoulkesCRUK.L05A_2-658952_cellranger_v3p0p1_refdata-cellranger-GRCh38-3_0_0.outs',
-'novaseq.190919_A00266_0278_BHFJY5DRXX_ParkFoulkesCRUK.L05B_2-658953_cellranger_v3p0p1_refdata-cellranger-GRCh38-3_0_0.outs'
-]
-busfiles = [f'/home/mstrasse/mountSSD/kallisto_out/{s}/kallisto/sort_bus/bus_output/output.corrected.sort.bus' for s in samples]
-bus_dict = {n:b for n,b in zip(samples, busfiles)}
-import itertools
-import tqdm
-from pybustools.parallel_generators import ParallelCellGenerator
-from pybustools.pybustools import iterate_bus_cells_multiple
-
-if True:  # run parallel
-    PG = ParallelCellGenerator(bus_dict, decode_seq=False, queue_size=10000)
-    PG.start_queues()
-    I = PG.iterate()
-else:  # run serial
-    I = iterate_bus_cells_multiple(samples, busfiles, decode_seq=False)
-
-
-def jacard(list1, list2):
-    s1 = set(list1)
-    s2 = set(list2)
-    return len(s1 & s2) / len(s1 | s2)
-
-cb_jaccard = []
-counter = 0
-for cb, info_dict in tqdm.tqdm(I):
-    jac = {}
-    for p1, p2 in itertools.combinations(samples, 2):
-        if p1 in info_dict and p2 in info_dict:
-            umi1 = [_[0] for _ in info_dict[p1]]
-            umi2 = [_[0] for _ in info_dict[p2]]
-            # umi2 = info_dict[p2]
-            j = jacard(umi1, umi2)
-            jac[(p1,p2)] = j
-    jac['CB'] = cb
-    cb_jaccard.append(jac)
-    counter+=1
-# parallel: 2504888it [19:41, 2120.96it/s]
-# serial :  2504888it [24:08, 1729.65it/s]
+    return df_binom
