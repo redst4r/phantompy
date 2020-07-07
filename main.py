@@ -66,13 +66,13 @@ samples = lanes[lane]
 bus = {s: Bus(f'{BUSDIR}/{s}/kallisto/sort_bus/bus_output/') for s in samples}
 
 # quick check: are all these EC-dicts compatible? they are not equal for sure!
-EC = {}
-for s, b in bus.items():
-    for ec, transcript_list in b.ec_dict.items():
-        if not ec in EC:
-            EC[ec] = transcript_list
-        else:
-            assert EC[ec] == transcript_list
+# EC = {}
+# for s, b in bus.items():
+#     for ec, transcript_list in b.ec_dict.items():
+#         if not ec in EC:
+#             EC[ec] = transcript_list
+#         else:
+#             assert EC[ec] == transcript_list
 
 df_finger, conditional = phantom_create_dataframes(bus)
 with open(f'/tmp/{flowcell}-{lane}_phantomPurger.pkl', 'wb') as fh:

@@ -6,7 +6,6 @@ import toolz
 import numpy as np
 import pandas as pd
 import tqdm
-import pickle
 
 
 # def info_list_to_genes(info_list, samplename):
@@ -96,7 +95,6 @@ def emit_records_based_on_gene(cb, umi, info_dict, busobject_dict):
             DS.add_set(gene_set, name=b)
 
         # now, each dijoint set is identified by a tuple of samples
-
         for bus_tuple in DS.disjoint_sets.keys():
             # the keys are a consistent single molecule
             # so we must create only ONE result per key
@@ -120,6 +118,21 @@ def _bus_check_transcript_equivalence(list_of_busobjects):
         assert bus.transcript_dict == list_of_busobjects[0].transcript_dict, "transcript ids map to different transcripts!!"
 
 
+def _create_fingerprint(info_dict):
+    """
+    turns an info_dict (a dict of bus-records from different experiments all corresponding to the same molecule)
+    into a fingerprint: counting the #reads per experiment of that molecule
+    """
+    fingerprint = collections.defaultdict(int)
+    for name, info_list in info_dict.items():
+        # for each sample, count the number of reads
+        n_reads = 0
+        for ec, counts, flag in info_list:
+            n_reads += counts
+        fingerprint[name] = n_reads
+    return fingerprint
+
+
 def phantom_create_dataframes(busobject_dict):
     """
     main function of PhantomPurger: for the set of samples (dict of busfiles),
@@ -134,12 +147,12 @@ def phantom_create_dataframes(busobject_dict):
     samples, busfiles = [], []
     for s, bus in busobject_dict.items():
         samples.append(s)
-        busfiles.append(str(bus.busfile))
+        busfiles.append(str(bus.bus_file))
 
     _bus_check_transcript_equivalence(list(busobject_dict.values()))
 
     # initialie iterators
-    PARALLEL = True
+    PARALLEL = False
     if PARALLEL:
         PG = ParallelCellUMIGenerator({s: b for s, b in zip(samples, busfiles)},
                                       decode_seq=False,
@@ -156,16 +169,13 @@ def phantom_create_dataframes(busobject_dict):
     for (cb_, umi_), info_dict_ in tqdm.tqdm(bus_iter):
         # THIS SPLIts according to same gene
         for (cb, umi), info_dict in emit_records_based_on_gene(cb_, umi_, info_dict_, busobject_dict):
-            fingerprint = collections.defaultdict(int)
-            for name, info_list in info_dict.items():
-                # for each sample, count the number of reads
-                n_reads = 0
-                for ec, counts, flag in info_list:
-                    n_reads += counts
-                fingerprint[name] = n_reads
+            fingerprint = _create_fingerprint(info_dict)
+            for name, n_reads in fingerprint.items():
                 amp_factors_per_sample[name][n_reads] += 1
-        fp = [fingerprint[_] for _ in samples]
-        fingerprints_counter[tuple(fp)] += 1
+
+            fp = [fingerprint[_] for _ in samples]
+            fingerprints_counter[tuple(fp)] += 1
+
 
     # if PARALLEL:
     #     PG.cleanup()
