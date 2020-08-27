@@ -21,9 +21,17 @@ import tqdm
 #     for s in genes[1:]:
 #         o = o & s
 #     return o
+TMPbus = collections.namedtuple("TMPbus", 'cb umi ec counts flag samplename')
 
 
 class DisjointSets():
+    """
+    d = DisjointSets()
+    d.add_set({1,2,3}, 'A')
+    d.add_set({4,5}, 'B')
+    d.add_set({4,7}, 'X')  # this will merge with B
+    d.add_set({1,7}, 'Y')  # this should merge the entire thing
+    """
 
     def __init__(self):
         self.disjoint_sets = {}
@@ -33,7 +41,7 @@ class DisjointSets():
         # look for disjoint sets that share a member with the current set
         candidate_setix = []
         for n, s in self.disjoint_sets.items():
-            if len(s & aset) > 0: # there;s a shared element
+            if len(s & aset) > 0:  # there;s a shared element
                 candidate_setix.append(n)
 
         # now, anything thats in the candidate set (+aset iself)
@@ -44,22 +52,13 @@ class DisjointSets():
         for n in candidate_setix:
             newset = newset | self.disjoint_sets[n]
             # new_name = new_name + '_' + n
-            new_name = new_name +  n
+            new_name = new_name + n
             del self.disjoint_sets[n]
 
         self.disjoint_sets[new_name] = newset
 
     def n_disjoint_sets(self):
         return len(self.disjoint_sets)
-"""
-d = DisjointSets()
-d.add_set({1,2,3}, 'A')
-d.add_set({4,5}, 'B')
-d.add_set({4,7}, 'X')  # this will merge with B
-d.add_set({1,7}, 'Y')  # this should merge the entire thing
-"""
-
-TMPbus = collections.namedtuple("TMPbus", 'cb umi ec counts flag samplename')
 
 
 def emit_records_based_on_gene(cb, umi, info_dict, busobject_dict):
@@ -67,8 +66,8 @@ def emit_records_based_on_gene(cb, umi, info_dict, busobject_dict):
     this splits the record into groups that map to the same gene/transcript
 
     info_dict contains muliple bus entries from different samples.
-    we want to group theese such that bus-records coming form the same molecules
-    are groupd
+    we want to group theese such that bus-records coming form the same
+    molecules are groupd
     """
     bus_list = []
 
@@ -107,7 +106,7 @@ def emit_records_based_on_gene(cb, umi, info_dict, busobject_dict):
                 else:
                     fake_ec = -1
                     emitted_dict[b.samplename] = (fake_ec, b.counts, b.flag)
-            emitted_dict = toolz.valmap(lambda x: [x], emitted_dict) # expected to yield a list
+            emitted_dict = toolz.valmap(lambda x: [x], emitted_dict)  # expected to yield a list
             yield (cb, umi), emitted_dict
 
 
@@ -115,13 +114,15 @@ def _bus_check_transcript_equivalence(list_of_busobjects):
     # quick check: are all these transcript-dicts compatible?
     # WE ASSUME THIS IN `emit_records_based_on_gene`
     for bus in list_of_busobjects:
-        assert bus.transcript_dict == list_of_busobjects[0].transcript_dict, "transcript ids map to different transcripts!!"
+        assert bus.transcript_dict == list_of_busobjects[0].transcript_dict, \
+            "transcript ids map to different transcripts!!"
 
 
 def _create_fingerprint(info_dict):
     """
-    turns an info_dict (a dict of bus-records from different experiments all corresponding to the same molecule)
-    into a fingerprint: counting the #reads per experiment of that molecule
+    turns an info_dict (a dict of bus-records from different experiments all
+    corresponding to the same molecule) into a fingerprint:
+    counting the #reads per experiment of that molecule
     """
     fingerprint = collections.defaultdict(int)
     for name, info_list in info_dict.items():
@@ -137,10 +138,14 @@ def phantom_create_dataframes(busobject_dict):
     """
     main function of PhantomPurger: for the set of samples (dict of busfiles),
     determine the molecules appearing in multiple experiments.
-    Instead of trackign every molecule, we just do bookkeeping on the "experiment" fingerprints of each molecule:
-     - each molecule gets a charateristic fingerprint/vector (hhow often it occurs in which experiment)
-     - instead of creating one entry per molecule, we just keep track of the frequencies of these fingerprints
-     - With four samples, a molecule might have the fingerprint: [0, 10, 2, 1] (doesnt occur in exp1, 10x in exp2, 2x in exp3...)
+    Instead of trackign every molecule, we just do bookkeeping on the
+    "experiment" fingerprints of each molecule:
+     - each molecule gets a charateristic fingerprint/vector
+       (hhow often it occurs in which experiment)
+     - instead of creating one entry per molecule, we just keep track of the
+       frequencies of these fingerprints
+     - With four samples, a molecule might have the fingerprint: [0, 10, 2, 1]
+       (doesnt occur in exp1, 10x in exp2, 2x in exp3...)
     """
 
     # unpack the dict; its easier
@@ -175,7 +180,6 @@ def phantom_create_dataframes(busobject_dict):
 
             fp = [fingerprint[_] for _ in samples]
             fingerprints_counter[tuple(fp)] += 1
-
 
     # if PARALLEL:
     #     PG.cleanup()
@@ -213,9 +217,9 @@ def phantom_create_dataframes(busobject_dict):
 
 def phantom_prep_binom_regr(df_finger):
     """
-    turn the fingerprint dataframe into a DF that we can use in binomial regression.
-    Summarises the number of chimeric/nonchimeric molecule as a function of r
-    (r=sum of reads of the molecule)
+    turn the fingerprint dataframe into a DF that we can use in binomial
+    regression. Summarises the number of chimeric/nonchimeric molecule as a
+    function of r (r=sum of reads of the molecule)
     """
     # number of non-chimeric molecules as a function of r
     df_non_chimers = df_finger.query('k_chimera==1')
