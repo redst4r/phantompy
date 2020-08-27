@@ -242,6 +242,48 @@ def _group_by_ec(cb, umi, info_dict):
         yield (cb, umi), emit_dict
 
 
+def phantom_create_dataframes_h5bus(samples, list_of_busfiles):
+    """
+    this lets us start with "fake" busfiles that we created from
+    10x molecule_info.h5.
+
+    Here we dont check that the ECs overlap (the EC field in these bus record
+    are gene identifiers).
+    We just check that busrecords have the SAME EC(gene) too!
+    """
+
+    # initialie iterators
+    PARALLEL = False
+    if PARALLEL:
+        PG = ParallelCellUMIGenerator({s: b for s, b in zip(samples, list_of_busfiles)},
+                                      decode_seq=False,
+                                      queue_size=10000)
+        PG.start_queues()
+        bus_iter = PG.iterate()
+    else:
+        bus_iter = iterate_bus_cells_umi_multiple(samples, list_of_busfiles, decode_seq=False)
+
+    # keep track of how molecules get amplified in the different samples
+    amp_factors_per_sample = {n: collections.defaultdict(int) for n in samples}
+    fingerprints_counter = collections.defaultdict(int)
+
+    for (cb_, umi_), info_dict_ in tqdm.tqdm(bus_iter):
+        # THIS SPLIts according to same gene
+        for (cb, umi), info_dict in _group_by_ec(cb_, umi_, info_dict_):
+            fingerprint = _create_fingerprint(info_dict)
+            for name, n_reads in fingerprint.items():
+                amp_factors_per_sample[name][n_reads] += 1
+
+            fp = [fingerprint[_] for _ in samples]
+            fingerprints_counter[tuple(fp)] += 1
+
+    # if PARALLEL:
+    #     PG.cleanup()
+
+    df_finger, conditional = _counter_to_df(fingerprints_counter, samples)
+    return df_finger, conditional
+
+
 def phantom_prep_binom_regr(df_finger):
     """
     turn the fingerprint dataframe into a DF that we can use in binomial
