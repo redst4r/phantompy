@@ -134,6 +134,38 @@ def _create_fingerprint(info_dict):
     return fingerprint
 
 
+def _counter_to_df(fingerprints_counter, samples):
+    k, v = zip(*fingerprints_counter.items())
+    df_finger = pd.DataFrame(k, columns=samples)
+    k_chimera = np.sum(df_finger.values > 0, 1)
+    r = np.sum(df_finger.values, 1)
+
+    df_finger['k_chimera'] = k_chimera
+    df_finger['r'] = r
+    df_finger['freq'] = v
+
+    # calc the conditional (on r) prob of finding a molecule
+    # ampliefied r times in each experiment
+    conditional = []
+
+    for r in df_finger['r'].unique():
+        _tmp = df_finger.query('r==@r')
+
+        # each sample has k amount of reads.
+        # but we also obersve the entire fingerprint n times
+        # so each expeiment really had k*n amount of reads
+        v = {}
+        for s in samples:
+            v[s] = np.sum(_tmp[s] * _tmp['freq'])
+        v_total = sum(v.values())
+        v = toolz.valmap(lambda x: x/v_total, v)
+        for s in samples:
+            conditional.append({'r': r, 'sample': s, 'fraction': v[s]})
+    conditional = pd.DataFrame(conditional).pivot_table(index='r', columns='sample', values='fraction')
+
+    return df_finger, conditional
+
+
 def phantom_create_dataframes(busobject_dict):
     """
     main function of PhantomPurger: for the set of samples (dict of busfiles),
@@ -184,35 +216,30 @@ def phantom_create_dataframes(busobject_dict):
     # if PARALLEL:
     #     PG.cleanup()
 
-    k, v = zip(*fingerprints_counter.items())
-    df_finger = pd.DataFrame(k, columns=samples)
-    k_chimera = np.sum(df_finger.values > 0, 1)
-    r = np.sum(df_finger.values, 1)
-
-    df_finger['k_chimera'] = k_chimera
-    df_finger['r'] = r
-    df_finger['freq'] = v
-
-    # calc the conditional (on r) prob of finding a molecule
-    # ampliefied r times in each experiment
-    conditional = []
-
-    for r in df_finger['r'].unique():
-        _tmp = df_finger.query('r==@r')
-
-        # each sample has k amount of reads.
-        # but we also obersve the entire fingerprint n times
-        # so each expeiment really had k*n amount of reads
-        v = {}
-        for s in samples:
-            v[s] = np.sum(_tmp[s] * _tmp['freq'])
-        v_total = sum(v.values())
-        v = toolz.valmap(lambda x: x/v_total, v)
-        for s in samples:
-            conditional.append({'r': r, 'sample': s, 'fraction': v[s]})
-    conditional = pd.DataFrame(conditional).pivot_table(index='r', columns='sample', values='fraction')
-
+    df_finger, conditional = _counter_to_df(fingerprints_counter, samples)
     return df_finger, conditional
+
+
+def _group_by_ec(cb, umi, info_dict):
+
+    bus_list = []
+    for samplename, info_list in info_dict.items():
+        for entry in info_list:
+            _t = TMPbus(cb, umi, entry[0], entry[1], entry[2], samplename)
+            bus_list.append(_t)
+
+    groups = collections.defaultdict(list)
+    for r in bus_list:
+        groups[r.ec].append(r)
+
+    for ec, record_list in groups.items():
+        emit_dict = {}
+        for r in record_list:
+            if r.samplename in emit_dict:
+                emit_dict[r.samplename].append((r.ec, r.counts, r.flag))
+            else:
+                emit_dict[r.samplename] = [(r.ec, r.counts, r.flag)]
+        yield (cb, umi), emit_dict
 
 
 def phantom_prep_binom_regr(df_finger):
