@@ -16,49 +16,41 @@ Channel
         .set {kallisto_gene_map}
 // samples = params.samples.split()
 
-// if (!(params.chemistry == '10xv2' || params.chemistry == '10xv3')){
-//   exit 1, "--chemistrymust be either 10xv3 or 10xv2"
-// }
-
-// if (!params.outdir){
-//   exit 1, "--outdir not set!"
-// }
-// if (!params.bamfile){
-//   exit 1, "--bamfile not set!"
-// }
-
+// read the samplenames from the file, line by line
 Channel
   .fromPath(params.samples)
   .splitText() {it.strip()}
   .filter(){ it != ""}
+  .map {it.split()}   // splitting into sampleID and gs-path
   .set{samplelist1}
+
 
 // since the splitting down there doesnt work split the samplelist and download twice
 Channel
   .fromPath(params.samples)
   .splitText() {it.strip()}
   .filter(){ it != ""}
+  .map {it.split()}   // splitting into sampleID and gs-path
   .set{samplelist2}
 
 process download_kallisto_bus {
-  // publishDir "./pipe_out", mode: 'copy'
-
   input:
-  val samplename from samplelist1
+  val samplename_gs from samplelist1
 
   output:
-  file "${samplename}_sorted.bus" into busfiles
+  file "${samplename_gs[0]}_sorted.bus" into busfiles
 
   script:
+  sampleid=  samplename_gs[0]
+  gslocation=samplename_gs[1]
   """
-  gsutil -m cp gs://cruk-01-kallisto-nextflow/${samplename}/kallisto/sort_bus/bus_output/output.corrected.sort.bus ./${samplename}_sorted.bus
+  gsutil -m cp ${gslocation}/kallisto/sort_bus/bus_output/output.corrected.sort.bus ./${sampleid}_sorted.bus
   """
 }
 
 
 //////////////////////////////
-//
-// forking this channel does something funny, such that we cant use '*.bus' in  suspicious_pugs
+// forking this channel does something funny, such that we cant use '*.bus' in  suspicious_CUGs
 //////////////////////////////
 //
 // Channel
@@ -74,18 +66,20 @@ process download_kallisto_bus {
 
 
 busfiles1 = busfiles
-process suspicious_pugs {
+process suspicious_CUGs {
   publishDir "${params.outputdir}", mode: 'copy'
 
   input:
-  file '*.bus' from busfiles1.collect()
+  file '*_sorted.bus' from busfiles1.collect()
 
   output:
   file 'suspicious.pkl' into suspicious
+  file 'suspicious.log'
+
 
   script:
   """
-  python /home/mstrasse/phantompy/cruk-phantom-cli.py suspicious --outfile suspicious.pkl *.bus
+  python /home/mstrasse/phantompy/cruk-phantom-cli.py suspicious --outfile suspicious.pkl *_sorted.bus > suspicious.log
   """
 
 }
@@ -116,11 +110,11 @@ process download_kallisto_bus_and_filter_v2 {
 
   input:
   file 'suspicious.pkl' from suspicious
-  val samplename from samplelist2
+  val samplename_gs from samplelist2
   file t2g from kallisto_gene_map.collect()
 
   output:
-  file "${samplename}" into filtered_bus
+  file "${samplename_gs[0]}" into filtered_bus
 
 
   // this does it all in one
@@ -130,11 +124,13 @@ process download_kallisto_bus_and_filter_v2 {
   // bustools count -o ${bus}_eqcount/tcc -g $t2g -e ${bus}/matrix.ec -t ${bus}/transcripts.txt ${bus}/output.corrected.sort.bus
   // bustools count -o ${bus}_genecount/gene -g $t2g -e ${bus}/matrix.ec -t ${bus}/transcripts.txt --genecounts ${bus}/output.corrected.sort.bus
   script:
+  sampleid=  samplename_gs[0]
+  gslocation=samplename_gs[1]
   """
-  gsutil -m cp 'gs://cruk-01-kallisto-nextflow/${samplename}/kallisto/sort_bus/bus_output/*' .
-  EQCOUNT=${samplename}/kallisto/bustools_counts/bus_output_eqcount
-  GENECOUNT=${samplename}/kallisto/bustools_counts/bus_output_genecount
-  SORT=${samplename}/kallisto/sort_bus/bus_output
+  gsutil -m cp '${gslocation}/kallisto/sort_bus/bus_output/*' .
+  EQCOUNT=${sampleid}/kallisto/bustools_counts/bus_output_eqcount
+  GENECOUNT=${sampleid}/kallisto/bustools_counts/bus_output_genecount
+  SORT=${sampleid}/kallisto/sort_bus/bus_output
   mkdir -p \$EQCOUNT
   mkdir -p \$GENECOUNT
   mkdir -p \$SORT
@@ -143,7 +139,7 @@ process download_kallisto_bus_and_filter_v2 {
   cp transcripts.txt \$SORT
 
   bustools count -o \$EQCOUNT/tcc -g $t2g -e \$SORT/matrix.ec -t \$SORT/transcripts.txt \$SORT/output.corrected.sort.bus
-  bustools count -o \$GENECOUNT/gene -g $t2g -e \$SORT/matrix.ec -t \$SORT/transcripts.txt \$SORT/output.corrected.sort.bus
+  bustools count --genecounts  -o \$GENECOUNT/gene -g $t2g -e \$SORT/matrix.ec -t \$SORT/transcripts.txt \$SORT/output.corrected.sort.bus
   """
 
   // gsutil -m cp 'gs://cruk-01-kallisto-nextflow/${samplename}/kallisto/sort_bus/bus_output/*' .
