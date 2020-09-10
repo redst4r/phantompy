@@ -1,13 +1,12 @@
 from pybustools.pybustools import iterate_bus_cells_umi_multiple
 from pybustools.pybustools import Bus
-from pybustools.parallel_generators import ParallelCellUMIGenerator
 import collections
 import toolz
 import numpy as np
 import pandas as pd
 import tqdm
 import pickle
-from phantom import emit_records_based_on_gene, phantom_create_dataframes, phantom_prep_binom_regr
+from phantom import emit_records_based_on_gene, phantom_create_dataframes
 
 
 BUSDIR = '/home/mstrasse/mountSSD/kallisto_out'

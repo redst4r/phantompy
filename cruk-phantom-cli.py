@@ -6,12 +6,15 @@ import pickle
 import tqdm
 from pybustools.pybustools import iterate_bus_cells_umi_multiple
 from pybustools.busio import write_busfile, get_header_info, read_binary_bus
-
+import collections
 VERBOSE = True
 
 
 def identify_suspicious(outfile, *busfiles):
-
+    """
+    Identify suspicious CUGs (that probably swapped). Done by looking at all
+    datasets from a singl run/lane and identify CUGs that occur more than once
+    """
     if VERBOSE:
         print(f'Processing {len(busfiles)} busfiles:')
         for b in busfiles:
@@ -22,20 +25,33 @@ def identify_suspicious(outfile, *busfiles):
                                               decode_seq=False)
 
     dubious_cb_umi = []
+
+    # also keep track of how much the experiments overlapped in terms of umis
+    # key are all potential overlaps (for 3 experiments: 12, 13, 23, 123)
+    overlaps = collections.defaultdict(int)
+
     for (cb, umi), info_dict_ in tqdm.tqdm(bus_iter):
         if len(info_dict_) > 1:
             # this molecule occured in more then 1 samples,
             # hence a hopped candidate
             dubious_cb_umi.append((cb, umi))
+        s = frozenset(info_dict_.keys())
+        overlaps[s] += 1
 
     with open(outfile, 'wb') as fh:
         pickle.dump(dubious_cb_umi, fh)
 
     print(f'{len(dubious_cb_umi)} CUGs marked suspicious')
 
+    print('Overlaps')
+    for k, v in overlaps.items():
+        print(f'{k}\t\t\t\t: {v}')
+
 
 def filter_busfile(inbus, outbus, suspicious):
-
+    """
+    filtering the inbus file for CUGs that are listed in the suspicious-file
+    """
     if VERBOSE:
         print(f'Filtering {inbus} using {suspicious}')
 
