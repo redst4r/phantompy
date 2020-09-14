@@ -6,8 +6,18 @@ import pickle
 import tqdm
 from pybustools.pybustools import iterate_bus_cells_umi_multiple
 from pybustools.busio import write_busfile, get_header_info, read_binary_bus
+from pybustools.utils import h5_to_bus
 import collections
 VERBOSE = True
+
+
+def h5_convert(h5file, busfile, TMPDIR):
+    """
+    convert cellranger molecule.h5 files to the bus format.
+    This is used in phantompurger for those data where not all samples are available as bam/fastq files
+    
+    """
+    h5_to_bus(h5file, busfile, TMPDIR)
 
 
 def identify_suspicious(outfile, *busfiles):
@@ -80,6 +90,7 @@ if __name__ == '__main__':
     fire.Fire({
         'suspicious': identify_suspicious,
         'filter': filter_busfile,
+        'h5convert': h5_convert
     })
 
 
